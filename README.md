@@ -62,7 +62,7 @@ Interactive API documentation: http://127.0.0.1:8000/docs
 ```json
 {
   "classification": "kasar",
-  "rewritten_text": "kalimat yang telah disunting lebih santun"
+  "rewritten_texts": ["kalimat yang telah disunting lebih santun", "kalimat yang telah disunting lebih santun", "kalimat yang telah disunting lebih santun", "kalimat yang telah disunting lebih santun", "kalimat yang telah disunting lebih santun"]
 }
 ```
 

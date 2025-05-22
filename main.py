@@ -28,15 +28,22 @@ if not api_key:
 
 llm = ChatGoogleGenerativeAI(model='gemini-2.0-flash-exp', google_api_key=api_key)
 
-# Load NSFW detection model (lazy loading - will only load when endpoint is called)
+# Load NSFW detection model (lazy loading - will only load when endpoint is called) - placeholder global
 processor = None
 model = None
+
+"""
+NSFW detector sudah didapat opsi model lokal terbaik yaitu Telah dilakukan evaluasi model NSFW detector, dan 
+diperoleh dua opsi model 
+- ("AdamCodd/vit-base-nsfw-detector”) dan 
+- ("openai/clip-vit-large-patch14”) - img-3 , 4, 5 :
+"""
 
 def load_nsfw_model():
     global processor, model
     if processor is None or model is None:
-        processor = AutoProcessor.from_pretrained("Falconsai/nsfw_image_detection")
-        model = AutoModelForImageClassification.from_pretrained("Falconsai/nsfw_image_detection")
+        processor = AutoProcessor.from_pretrained("AdamCodd/vit-base-nsfw-detector")
+        model = AutoModelForImageClassification.from_pretrained("AdamCodd/vit-base-nsfw-detector")
     return processor, model
 
 # Pydantic models for request and response validation
@@ -45,20 +52,31 @@ class TextRequest(BaseModel):
 
 class TextResponse(BaseModel):
     classification: str = Field(..., description="Classification result: 'kasar', 'gaul', or 'netral'")
-    rewritten_text: str = Field(..., description="The rewritten, more polite version of the text")
+    rewritten_texts: List[str] = Field(..., description="List of rewritten, more polite versions of the text")
 
 class NSFWResponse(BaseModel):
     nsfw_score: float = Field(..., description="Confidence score for NSFW content (0-1)")
     is_nsfw: bool = Field(..., description="Whether the image is classified as NSFW")
 
-# Text classification function
+# Text classification function --disini
 def classify_text(text: str) -> str:
     """Classify text as 'kasar', 'gaul', or 'netral'."""
     prompt = f"""
-    Classify the following Indonesian text into one of these categories: 'kasar', 'gaul', or 'netral'.
-    Text: "{text}"
+    Classify the following Indonesian text (which may contain slang, regional languages, or mixed languages) into one of these categories:
+    - 'kasar' (vulgar/impolite language, swear words, or offensive terms)
+    - 'gaul' (slang, informal language, or mixed language including English/regional terms)
+    - 'netral' (standard/formal Indonesian without offensive or slang elements)
+
+    Text to classify: "{text}"
+
+    Consider these guidelines:
+    1. If the text contains swear words, offensive terms, or vulgar language, classify as 'kasar'
+    2. If the text uses informal language, slang, or mixes Indonesian with English/regional languages but isn't offensive, classify as 'gaul'
+    3. If the text is in standard/formal Indonesian without slang or offensive terms, classify as 'netral'
+
     Return ONLY ONE of these exact words: 'kasar', 'gaul', or 'netral'.
     """
+    
     response = llm.invoke(prompt)
     # Extract and normalize classification
     classification = response.content.strip().lower()
@@ -68,27 +86,58 @@ def classify_text(text: str) -> str:
     return classification
 
 # Text rewriting function
-def rewrite_text(text: str, classification: str) -> str:
-    """Rewrite text to be more polite based on classification."""
+def rewrite_text(text: str, classification: str) -> List[str]:
+    """Rewrite text to generate multiple polite versions based on classification."""
     if classification == "netral":
-        return text  # No need to rewrite neutral text
+        return [text]  # No need to rewrite neutral text
     
     prompt_template = """
     Berikut adalah teks dalam Bahasa Indonesia: "{text}"
     Teks ini terklasifikasi sebagai "{classification}".
     
-    Tugas Anda adalah untuk menulis ulang teks tersebut menjadi lebih sopan dan formal,
+    Tugas Anda adalah untuk menulis ulang teks tersebut menjadi 5 versi yang lebih sopan dan formal,
     namun tetap mempertahankan maksud aslinya.
     
     Jika teks mengandung kata-kata kasar, ganti dengan kata-kata yang lebih sopan.
     Jika teks menggunakan bahasa gaul, ubah menjadi bahasa formal yang baik dan benar.
+    
+    Format output:
+    1. [versi pertama]
+    2. [versi kedua]
+    3. [versi ketiga]
+    4. [versi keempat]
+    5. [versi kelima]
     
     Berikan HANYA hasil penulisan ulang saja tanpa penjelasan tambahan.
     """
     
     prompt = PromptTemplate(template=prompt_template, input_variables=["text", "classification"])
     response = llm.invoke(prompt.invoke({"text": text, "classification": classification}))
-    return response.content.strip()
+    
+    # Parse the response to extract the 5 versions
+    response_text = response.content.strip()
+    versions = []
+    
+    # Try to extract numbered versions (1. version, 2. version, etc.)
+    import re
+    numbered_versions = re.findall(r'^\d+\.\s+(.*?)$', response_text, re.MULTILINE)
+    
+    if len(numbered_versions) >= 5:
+        # If we successfully extracted at least 5 numbered versions
+        versions = numbered_versions[:5]
+    else:
+        # Fallback: split by newlines and try to get 5 versions
+        lines = [line.strip() for line in response_text.split('\n') if line.strip()]
+        versions = lines[:5]
+    
+    # If we still don't have 5 versions, pad with the first version
+    while len(versions) < 5:
+        if versions:
+            versions.append(versions[0])
+        else:
+            versions.append(text)  # Fallback to original text if nothing was extracted
+    
+    return versions
 
 @app.post("/rewrite", response_model=TextResponse)
 async def rewrite_endpoint(request: TextRequest):
@@ -99,18 +148,18 @@ async def rewrite_endpoint(request: TextRequest):
     
     Returns:
     - **classification**: Whether the text is 'kasar', 'gaul', or 'netral'
-    - **rewritten_text**: The polite version of the text
+    - **rewritten_texts**: List of rewritten, more polite versions of the text
     """
     try:
         # Get the classification
         classification = classify_text(request.text)
         
         # Rewrite the text if needed
-        rewritten = rewrite_text(request.text, classification)
+        rewritten_versions = rewrite_text(request.text, classification)
         
         return TextResponse(
             classification=classification,
-            rewritten_text=rewritten
+            rewritten_texts=rewritten_versions
         )
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Error processing text: {str(e)}")
