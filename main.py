@@ -40,11 +40,80 @@ diperoleh dua opsi model
 """
 
 def load_nsfw_model():
+    """
+    Loads the NSFW detection model.
+    Returns processor and model for image classification.
+    Includes verbose error handling to diagnose import issues.
+    """
     global processor, model
-    if processor is None or model is None:
+    
+    print("Starting to load NSFW model...")
+    
+    if processor is not None and model is not None:
+        print("Model already loaded, returning cached version")
+        return processor, model
+    
+    try:
+        print("Importing necessary components...")
+        # Try explicit imports first to diagnose any issues
+        import transformers
+        print(f"Transformers version: {transformers.__version__}")
+        
+        import huggingface_hub
+        print(f"Huggingface Hub version: {huggingface_hub.__version__}")
+        
+        # Check if the required function exists
+        try:
+            from huggingface_hub import split_torch_state_dict_into_shards
+            print("Successfully imported split_torch_state_dict_into_shards")
+        except ImportError:
+            print("WARNING: split_torch_state_dict_into_shards not found in huggingface_hub")
+            print("This may cause issues with the transformers library")
+        
+        print("Loading processor from AdamCodd/vit-base-nsfw-detector")
         processor = AutoProcessor.from_pretrained("AdamCodd/vit-base-nsfw-detector")
+        print("Processor loaded successfully")
+        
+        print("Loading model from AdamCodd/vit-base-nsfw-detector")
         model = AutoModelForImageClassification.from_pretrained("AdamCodd/vit-base-nsfw-detector")
-    return processor, model
+        print("Model loaded successfully")
+        
+        return processor, model
+    
+    except ImportError as e:
+        print(f"Import error: {str(e)}")
+        import traceback
+        print(traceback.format_exc())
+        
+        # Try alternative imports as a fallback
+        try:
+            print("Attempting alternative approach...")
+            
+            # Try different model as fallback
+            print("Trying fallback model...")
+            from transformers import ViTImageProcessor, ViTForImageClassification
+            
+            print("Loading processor using direct class import")
+            processor = ViTImageProcessor.from_pretrained("AdamCodd/vit-base-nsfw-detector")
+            print("Processor loaded successfully")
+            
+            print("Loading model using direct class import")
+            model = ViTForImageClassification.from_pretrained("AdamCodd/vit-base-nsfw-detector")
+            print("Model loaded successfully")
+            
+            return processor, model
+        
+        except Exception as fallback_error:
+            print(f"Fallback approach also failed: {str(fallback_error)}")
+            import traceback
+            print(traceback.format_exc())
+            raise RuntimeError(f"Failed to load NSFW model: {str(e)} -> Fallback error: {str(fallback_error)}")
+    
+    except Exception as e:
+        print(f"Unexpected error loading NSFW model: {str(e)}")
+        import traceback
+        print(traceback.format_exc())
+        raise
 
 # Pydantic models for request and response validation
 class TextRequest(BaseModel):
@@ -175,30 +244,69 @@ async def detect_nsfw(file: UploadFile = File(...)):
     - **nsfw_score**: Confidence score for NSFW content (0-1)
     - **is_nsfw**: Boolean indicating if the image is classified as NSFW
     """
+    print("Starting NSFW detection process")
     try:
         # Read and process the image
+        print("Reading uploaded file")
         image_bytes = await file.read()
+        print(f"File read successfully, size: {len(image_bytes)} bytes")
+        
+        print("Opening image with PIL")
         image = Image.open(io.BytesIO(image_bytes)).convert("RGB")
+        print(f"Image opened successfully, size: {image.size}")
         
         # Load the model if not already loaded
-        processor, model = load_nsfw_model()
+        print("Loading NSFW detection model")
+        try:
+            processor, model = load_nsfw_model()
+            print("Model and processor loaded successfully")
+        except Exception as model_error:
+            print(f"Error loading model: {str(model_error)}")
+            import traceback
+            print(traceback.format_exc())
+            raise
         
         # Prepare input and predict
-        inputs = processor(images=image, return_tensors="pt")
-        with torch.no_grad():
-            outputs = model(**inputs)
+        print("Preparing input for model")
+        try:
+            inputs = processor(images=image, return_tensors="pt")
+            print(f"Input prepared successfully, shape: {inputs['pixel_values'].shape}")
+        except Exception as proc_error:
+            print(f"Error during processing: {str(proc_error)}")
+            import traceback
+            print(traceback.format_exc())
+            raise
         
+        print("Running model inference")
+        try:
+            with torch.no_grad():
+                outputs = model(**inputs)
+            print("Model inference completed successfully")
+        except Exception as inf_error:
+            print(f"Error during inference: {str(inf_error)}")
+            import traceback
+            print(traceback.format_exc())
+            raise
+        
+        print("Processing model outputs")
         logits = outputs.logits
+        print(f"Logits shape: {logits.shape}")
         probabilities = torch.nn.functional.softmax(logits, dim=1)
+        print(f"Probabilities calculated, shape: {probabilities.shape}")
         nsfw_index = 1  # Assuming index 1 corresponds to NSFW class
         nsfw_score = probabilities[0, nsfw_index].item()
+        print(f"NSFW score: {nsfw_score}")
         is_nsfw = nsfw_score > 0.5  # Threshold can be adjusted
+        print(f"Final classification - is_nsfw: {is_nsfw}")
         
         return NSFWResponse(
             nsfw_score=nsfw_score,
             is_nsfw=is_nsfw
         )
     except Exception as e:
+        print(f"Error in NSFW detection: {str(e)}")
+        import traceback
+        print(traceback.format_exc())
         raise HTTPException(status_code=500, detail=f"Error processing image: {str(e)}")
 
 # Root endpoint for basic API info
